@@ -1,56 +1,122 @@
-
 import streamlit as st
-import serial
 import pandas as pd
+import paho.mqtt.client as mqtt
+import threading
 import time
+from collections import deque
 
-st.set_page_config(page_title="Monitor ADC", layout="wide")
-st.title("Monitor ADC - Arduino UNO")
-st.write("Visualización del potenciómetro en tiempo real")
+# CONFIGURACIÓN
+BROKER = "broker.hivemq.com"
+PUERTO_MQTT = 1883
+TOPICO = "upch/practica2/adc/monitor_01"
 
-puerto = st.text_input(
-    "Puerto serial",
-    "/dev/cu.usbserial-11220"
+st.set_page_config(
+    page_title="Monitor ADC - Arduino UNO",
+    layout="wide"
 )
 
-if "datos" not in st.session_state:
-    st.session_state.datos = []
+# ALMACENAMIENTO COMPARTIDO
+@st.cache_resource
+def iniciar_mqtt():
+    datos = deque(maxlen=100)
+    estado = {
+        "conectado": False,
+        "ultimo_adc": None,
+        "ultima_lectura": None,
+        "error": None
+    }
+    bloqueo = threading.Lock()
 
-if st.button("Iniciar monitoreo"):
+    def on_connect(client, userdata, flags, reason_code, properties):
+        with bloqueo:
+            estado["conectado"] = not reason_code.is_failure
+
+        if not reason_code.is_failure:
+            client.subscribe(TOPICO)
+
+    def on_disconnect(client, userdata, disconnect_flags,
+                      reason_code, properties):
+        with bloqueo:
+            estado["conectado"] = False
+
+    def on_message(client, userdata, msg):
+        try:
+            adc = int(msg.payload.decode("utf-8").strip())
+
+            if 0 <= adc <= 1023:
+                with bloqueo:
+                    datos.append(adc)
+                    estado["ultimo_adc"] = adc
+                    estado["ultima_lectura"] = time.time()
+
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+    cliente = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2
+    )
+
+    cliente.on_connect = on_connect
+    cliente.on_disconnect = on_disconnect
+    cliente.on_message = on_message
+
     try:
-        arduino = serial.Serial(puerto, 9600, timeout=1)
-        time.sleep(2)
+        cliente.connect(BROKER, PUERTO_MQTT, 60)
+        cliente.loop_start()
+    except Exception as e:
+        estado["error"] = str(e)
 
-        grafico = st.empty()
-        indicador = st.empty()
+    return datos, estado, bloqueo, cliente
 
-        for i in range(300):
-            linea = arduino.readline().decode(
-                "utf-8", errors="ignore"
-            ).strip()
 
-            try:
-                valor = int(linea)
-                if not 0 <= valor <= 1023:
-                    continue
-            except ValueError:
-                continue
+datos, estado, bloqueo, cliente = iniciar_mqtt()
 
-            st.session_state.datos.append(valor)
+# INTERFAZ
+st.title("Monitor ADC - Arduino UNO")
+st.write("Visualización de lecturas ADC recibidas mediante MQTT")
 
-            indicador.metric("ADC actual", valor)
+st.caption(f"Broker: {BROKER} | Tópico: {TOPICO}")
 
-            df = pd.DataFrame({
-                "ADC": st.session_state.datos[-100:]
-            })
+@st.fragment(run_every=1)
+def mostrar_monitor():
 
-            grafico.line_chart(
-    df,
-    y="ADC"
-)
+    with bloqueo:
+        valores = list(datos)
+        conectado = estado["conectado"]
+        ultimo_adc = estado["ultimo_adc"]
+        ultima_lectura = estado["ultima_lectura"]
+        error = estado["error"]
 
-        arduino.close()
-        st.success("Monitoreo finalizado")
+    if error:
+        st.error(f"Error MQTT: {error}")
 
-    except serial.SerialException as e:
-        st.error(f"Error de conexión: {e}")
+    elif conectado:
+        st.success("Conectado al broker MQTT")
+    else:
+        st.warning("Conectando al broker MQTT...")
+
+    if ultima_lectura is None:
+        st.info("Esperando lecturas ADC del Arduino...")
+
+    elif time.time() - ultima_lectura > 5:
+        st.warning(
+            "Sin lecturas recientes. "
+            "El Arduino puede estar desconectado."
+        )
+
+    if ultimo_adc is not None:
+        st.metric("Último valor ADC recibido", ultimo_adc)
+    else:
+        st.metric("Último valor ADC recibido", "—")
+
+    if valores:
+        df = pd.DataFrame({"ADC": valores})
+        st.line_chart(df, y="ADC")
+
+    st.caption(
+        "Rango ADC: 0–1023 | "
+        "Actualización de pantalla: cada segundo"
+    )
+
+
+mostrar_monitor()
