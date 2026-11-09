@@ -3,7 +3,7 @@
 ## El Arduino adquiere los valores del potenciómetro mediante su conversor analógico-digital (ADC) de 10 bits, generando lecturas entre 0 y 1023.
 ## Los datos se transmiten por comunicación serial a Python, que los publica mediante el protocolo MQTT utilizando un broker público. Finalmente, una aplicación desplegada en Streamlit Community Cloud recibe los mensajes y representa las lecturas mediante una gráfica dinámica (st.line_chart).
 ## Tecnologías utilizadas:
-## * Hardware: Arduino UNO y potenciómetro.
+* Hardware: Arduino UNO y potenciómetro.
 * Programación: Arduino IDE (C/C++) y Python.
 * Comunicación: Serial USB y protocolo MQTT.
 * Broker MQTT: HiveMQ público.
